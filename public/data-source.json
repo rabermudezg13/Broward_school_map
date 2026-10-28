@@ -1,0 +1,18 @@
+{
+  "publisher": "National Center for Education Statistics",
+  "schoolYear": "2024-2025",
+  "retrieved": "2026-10-28",
+  "countyFips": "12011",
+  "count": 331,
+  "url": "https://services1.arcgis.com/Ua5sjt3LWTPigjyD/ArcGIS/rest/services/Public_School_Locations_Current/FeatureServer/0",
+  "notes": "Includes public charter schools. Types inferred from school names; unrecognized names classified Other. Phone and grades omitted because source does not provide them. Locations do not establish attendance zones or current operating status.",
+  "addressWarnings": [
+    "120018007770",
+    "120018008962",
+    "120018008963",
+    "120018008705",
+    "120018008546",
+    "120018008232",
+    "120018008889"
+  ]
+}

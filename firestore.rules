@@ -1,0 +1,177 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function validString(value, min, max) {
+      return value is string && value.size() >= min && value.size() <= max;
+    }
+
+    function validParticipant() {
+      return validString(request.resource.data.registrationNumber, 4, 4)
+        && validString(request.resource.data.firstName, 1, 80)
+        && validString(request.resource.data.lastName, 1, 80)
+        && validString(request.resource.data.phone, 7, 30)
+        && validString(request.resource.data.email, 5, 160)
+        && validString(request.resource.data.zipCode, 5, 10)
+        && request.resource.data.companionCount is int
+        && request.resource.data.companionCount >= 0
+        && request.resource.data.companionCount <= 20
+        && request.resource.data.status == "eligible"
+        && request.resource.data.hasWon == false
+        && request.resource.data.createdAt is timestamp
+        && validString(request.resource.data.createdDate, 8, 8)
+        && validString(request.resource.data.createdTime, 10, 11)
+        && request.resource.data.timeZone == "America/New_York";
+    }
+
+    match /registrations/{registrationId} {
+      allow read: if true;
+      allow create: if validParticipant();
+      allow update: if request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        "firstName",
+        "lastName",
+        "phone",
+        "phoneDigits",
+        "email",
+        "emailLower",
+        "zipCode",
+        "companionCount",
+        "hasWon",
+        "status"
+      ]);
+      allow delete: if true;
+    }
+
+    match /raffleResults/{resultId} {
+      allow read, create: if true;
+      allow update, delete: if true;
+    }
+
+    match /prizes/{prizeId} {
+      allow read, write: if true;
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    match /logs/{logId} {
+      allow read, create: if true;
+      allow update, delete: if true;
+    }
+
+    match /statistics/{statId} {
+      allow read, write: if true;
+    }
+
+    match /audit/{auditId} {
+      allow read, create: if true;
+      allow update, delete: if true;
+    }
+
+    // Kelly Badge Dashboard: isolated, per-account snapshots.
+    // Parent fields: fileName, sheetName, asOf, recordCount, state,
+    // createdAt, updatedAt. Records: name, sourceRow, startAt,
+    // expiresAt, printed, status. Snapshot content is immutable.
+    function approvedBadgeUser(uid) {
+      return request.auth != null && request.auth.uid == uid
+        && request.auth.token.email_verified == true
+        && (request.auth.token.email == "rabermudezg@gmail.com"
+          || (exists(/databases/$(database)/documents/kellyBadgeMembers/$(uid))
+            && get(/databases/$(database)/documents/kellyBadgeMembers/$(uid)).data.enabled == true));
+    }
+    function badgeString(value, minSize, maxSize) {
+      return value is string && value.size() >= minSize && value.size() <= maxSize;
+    }
+    function validBadgeSnapshot(d) {
+      return d.keys().hasAll(['fileName','sheetName','asOf','recordCount','state','createdAt','updatedAt'])
+        && d.keys().hasOnly(['fileName','sheetName','asOf','recordCount','state','createdAt','updatedAt'])
+        && badgeString(d.fileName,1,255) && badgeString(d.sheetName,1,100)
+        && d.asOf is timestamp && d.recordCount is int && d.recordCount > 0 && d.recordCount <= 5000
+        && d.state in ['uploading','ready'] && d.createdAt is timestamp && d.updatedAt == request.time;
+    }
+    function validBadgeRecord(d) {
+      return d.keys().hasAll(['name','sourceRow','startAt','expiresAt','printed','status'])
+        && d.keys().hasOnly(['name','sourceRow','startAt','expiresAt','printed','status'])
+        && badgeString(d.name,1,200) && d.sourceRow is int && d.sourceRow > 0 && d.sourceRow <= 1000000
+        && (d.startAt == null || d.startAt is timestamp)
+        && (d.expiresAt == null || d.expiresAt is timestamp)
+        && d.printed is bool && badgeString(d.status,0,1000);
+    }
+    match /kellyBadgeMembers/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true;
+      allow write: if false;
+    }
+    match /kellyBadgeUsers/{uid}/snapshots/{snapshotId} {
+      allow read: if approvedBadgeUser(uid);
+      allow create: if approvedBadgeUser(uid) && validBadgeSnapshot(request.resource.data)
+        && request.resource.data.state == 'uploading' && request.resource.data.createdAt == request.time;
+      allow update: if approvedBadgeUser(uid) && validBadgeSnapshot(request.resource.data)
+        && resource.data.state == 'uploading' && request.resource.data.state == 'ready'
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['state','updatedAt']);
+      allow delete: if false;
+      match /records/{recordId} {
+        function parent() { return /databases/$(database)/documents/kellyBadgeUsers/$(uid)/snapshots/$(snapshotId); }
+        allow read: if approvedBadgeUser(uid) && exists(parent()) && get(parent()).data.state == 'ready';
+        allow create: if approvedBadgeUser(uid) && exists(parent()) && get(parent()).data.state == 'uploading'
+          && validBadgeRecord(request.resource.data);
+        allow update, delete: if false;
+      }
+    }
+    // Broward models: team roles keyed by email; visits and incidents keyed by NCES ID.
+    // All fields below are required and bounded; updatedAt must equal server time.
+    function browardSignedIn() { return request.auth != null; }
+    function browardEmail() { return request.auth.token.email.lower(); }
+    function browardAdmin() { return browardSignedIn() && browardEmail() == 'rodrigo.bermudez@kellyeducation.com'; }
+    function browardRole() {
+      return browardAdmin() ? 'admin' :
+        (exists(/databases/$(database)/documents/browardTeamMembers/$(browardEmail()))
+        ? get(/databases/$(database)/documents/browardTeamMembers/$(browardEmail())).data.role : 'none');
+    }
+    function browardTeam() { return browardSignedIn() && browardRole() in ['admin','management','in','recruiter','talent']; }
+    function browardIncidentTeam() { return browardSignedIn() && browardRole() in ['admin','management','in']; }
+    function browardString(v, max) { return v is string && v.size() <= max; }
+    function browardUpdated(d) { return d.updatedBy == browardEmail() && d.updatedAt == request.time; }
+    function validBrowardRole(d, id) {
+      return d.keys().hasAll(['email','role','updatedBy','updatedAt'])
+        && d.keys().hasOnly(['email','role','updatedBy','updatedAt'])
+        && d.email == id && browardString(d.email,254) && d.email.matches('.*@.*[.].*')
+        && d.role in ['management','in','recruiter','talent'] && browardUpdated(d);
+    }
+    function validBrowardVisit(d, id) {
+      return d.keys().hasAll(['visited','lastVisitedAt','notes','visitedByName','visitedByEmail','sublocatorName','sublocatorPhone','sublocatorEmail','sublocatorRating','visitedBy','schoolName','schoolId','updatedBy','updatedAt'])
+        && d.keys().hasOnly(['visited','lastVisitedAt','notes','visitedByName','visitedByEmail','sublocatorName','sublocatorPhone','sublocatorEmail','sublocatorRating','visitedBy','schoolName','schoolId','updatedBy','updatedAt'])
+        && d.visited is bool && browardString(d.lastVisitedAt,10)
+        && (!d.visited || d.lastVisitedAt.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}'))
+        && browardString(d.notes,10000) && browardString(d.visitedByName,200)
+        && browardString(d.visitedByEmail,254) && browardString(d.visitedBy,254)
+        && browardString(d.sublocatorName,200) && browardString(d.sublocatorPhone,40)
+        && browardString(d.sublocatorEmail,254) && d.sublocatorRating is int
+        && d.sublocatorRating >= 0 && d.sublocatorRating <= 5
+        && browardString(d.schoolName,300) && d.schoolId == id && id.matches('[0-9]{12}')
+        && browardUpdated(d);
+    }
+    function validBrowardIncident(d) {
+      return d.keys().hasAll(['active','notes','schoolName','updatedBy','updatedAt'])
+        && d.keys().hasOnly(['active','notes','schoolName','updatedBy','updatedAt'])
+        && d.active is bool && browardString(d.notes,10000)
+        && browardString(d.schoolName,300) && browardUpdated(d);
+    }
+    match /browardTeamMembers/{email} {
+      allow read: if browardAdmin() || (browardSignedIn() && browardEmail() == email);
+      allow create, update: if browardAdmin() && validBrowardRole(request.resource.data,email);
+      allow delete: if browardAdmin();
+    }
+    match /browardVisits/{id} {
+      allow read: if browardTeam();
+      allow create, update: if browardTeam() && validBrowardVisit(request.resource.data,id);
+      allow delete: if browardAdmin();
+    }
+    match /browardIncidents/{id} {
+      allow read: if browardIncidentTeam();
+      allow create, update: if browardIncidentTeam() && id.matches('[0-9]{12}') && validBrowardIncident(request.resource.data);
+      allow delete: if browardAdmin();
+    }
+  }
+}
